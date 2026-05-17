@@ -17,7 +17,7 @@ if uploaded_file is not None:
     current_supplier = ""
     start_parsing = False
     
-    # തീയതികൾ കണ്ടെത്താനുള്ള റീജക്സ് (Format: DD/MM/YYYY)
+    # തീയതികൾ കണ്ടെത്താനുള്ള റീജക്സ് (Format: DD/MM/YYYY അല്ലെങ്കിൽ D/M/YYYY)
     date_pattern = r'\b\d{1,2}/\d{1,2}/\d{4}\b'
     
     # കോമൺ ആയി ഒട്ടിനിൽക്കുന്ന പ്രധാന കമ്പനികളുടെ ലിസ്റ്റ്
@@ -62,7 +62,7 @@ if uploaded_file is not None:
                 item_name = before_slash
                 packing = ""
                 
-            # --- 📆 EXPIRY DATE അടിസ്ഥാനമാക്കിയുള്ള ലോജിക് (ഇനി ഒരു വരിയും തെറ്റില്ല) ---
+            # --- 📆 EXPIRY DATE അടിസ്ഥാനമാക്കിയുള്ള ലോജിക് (ഇനി ഒരു വരിയും ബ്ലാങ്ക് ആകില്ല) ---
             all_dates = re.findall(date_pattern, after_slash)
             if not all_dates:
                 continue
@@ -78,18 +78,21 @@ if uploaded_file is not None:
             mfg = ""
             batch = ""
             
+            # 1. ആദ്യം കോമൺ കമ്പനികളുടെ പേര് വെച്ച് നോക്കുന്നു
             for k_mfg in known_mfgs:
                 if left_part.upper().startswith(k_mfg.upper()):
                     mfg = k_mfg
                     batch = left_part[len(k_mfg):].strip()
                     break
             
+            # 2. ലിസ്റ്റിൽ ഇല്ലാത്ത കമ്പനിയാണെങ്കിൽ സ്പേസ് വെച്ച് തിരിക്കുന്നു
             if not mfg:
                 mfg_batch_tokens = re.split(r'\s{2,}', left_part)
                 if len(mfg_batch_tokens) >= 2:
                     mfg = mfg_batch_tokens[0].strip()
                     batch = mfg_batch_tokens[1].strip()
                 else:
+                    # സ്പേസ് ഒട്ടുമില്ലാതെ ഒട്ടിപ്പിടിച്ചിരിക്കുകയാണെങ്കിൽ
                     combined = mfg_batch_tokens[0]
                     match = re.match(r'^([a-zA-Z\s\-\.]+)(.*)$', combined)
                     if match:
