@@ -42,7 +42,6 @@ def process_inv_file(uploaded_file):
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     inv_data = []
-    # 🛠️ കമ്പനിയും റാക്കും ലാസ്റ്റ് സപ്ലയറും സേവ് ചെയ്യുന്ന ഡിക്ഷണറി 
     xls_lookup = {} 
 
     for _, row in df.iterrows():
@@ -58,7 +57,6 @@ def process_inv_file(uploaded_file):
         rack_clean = rack if rack and rack.lower() != 'nan' else ""
         last_sup_clean = sup if sup and sup.lower() != 'nan' else ""
         
-        # ഡിക്ഷണറിയിലേക്ക് ഐറ്റത്തിന്റെ പേര് വെച്ച് സേവ് ചെയ്യുന്നു
         xls_lookup[iname.upper()] = {
             "mfg": mfg_clean,
             "rack": rack_clean,
@@ -74,8 +72,7 @@ def process_inv_file(uploaded_file):
         inv_data.append({
             "Item Name": iname,
             "Manufacturer": mfg_clean,
-            "Supplier": "", # സീറോ സ്റ്റോക്കിൽ ബാച്ച് സപ്ലയർ ഇല്ല
-            "Last Supplier": last_sup_clean,
+            "Supplier": "", 
             "Rack ID": rack_clean,
             "Packing": "",
             "Batch": "",
@@ -83,7 +80,8 @@ def process_inv_file(uploaded_file):
             "MRP": 0.0,
             "Quantity": qty,  
             "Invoice Date": pd.NaT,
-            "Invoice Number": ""
+            "Invoice Number": "",
+            "Last Supplier": last_sup_clean
         })
         
     return pd.DataFrame(inv_data), xls_lookup
@@ -176,51 +174,44 @@ def process_txt_file(uploaded_file, xls_lookup):
             left_part = after_slash[:expiry_idx].strip()   
             right_part = after_slash[expiry_idx + len(expiry_date_str):].strip() 
             
+            # --- 🛠️ STEP 1: TXT-യിൽ നിന്ന് ആദ്യം ബാച്ചും കമ്പനിയും പെർഫെക്റ്റ് ആയി വേർതിരിക്കുന്നു ---
             mfg = ""
             batch = ""
-            xls_rack = ""
-            xls_last_sup = ""
             
-            # 🛠️ XLS ഫയലിലെ ഡേറ്റ വെച്ച് 100% കൃത്യമായി കമ്പനിയും ബാച്ചും എടുക്കുന്നു
-            item_key = item_name.upper()
-            if item_key in xls_lookup:
-                mfg = xls_lookup[item_key]["mfg"]
-                xls_rack = xls_lookup[item_key]["rack"]
-                xls_last_sup = xls_lookup[item_key]["last_sup"] # Last Supplier From XLS
-                
-                # XLS-ൽ നിന്നുള്ള കമ്പനിയുടെ പേര് വെച്ച് യഥാർത്ഥ ബാച്ച് നമ്പർ മാത്രം മുറിച്ചെടുക്കുന്നു
-                if mfg and mfg != "MISC.":
-                    pattern = re.compile('^' + re.escape(mfg) + r'\s*', re.IGNORECASE)
-                    if pattern.search(left_part):
-                        batch = pattern.sub('', left_part).strip()
-
-            # XLS-ൽ ഐറ്റം ഇല്ലെങ്കിൽ പഴയ രീതിയിൽ കണ്ടുപിടിക്കുന്നു (Fallback)
-            if not batch and not mfg:
-                for k_mfg in known_mfgs:
-                    if left_part.upper().startswith(k_mfg.upper()):
-                        mfg = k_mfg
-                        batch = left_part[len(k_mfg):].strip()
-                        break
-                
-                if not mfg:
-                    mfg_batch_tokens = re.split(r'\s{2,}', left_part)
-                    if len(mfg_batch_tokens) >= 2:
-                        mfg = mfg_batch_tokens[0].strip()
-                        batch = mfg_batch_tokens[1].strip()
+            for k_mfg in known_mfgs:
+                if left_part.upper().startswith(k_mfg.upper()):
+                    mfg = k_mfg
+                    batch = left_part[len(k_mfg):].strip()
+                    break
+            
+            if not mfg:
+                mfg_batch_tokens = re.split(r'\s{2,}', left_part)
+                if len(mfg_batch_tokens) >= 2:
+                    mfg = mfg_batch_tokens[0].strip()
+                    batch = mfg_batch_tokens[1].strip()
+                else:
+                    combined = mfg_batch_tokens[0]
+                    words = combined.split()
+                    if len(words) > 1 and any(char.isdigit() for char in words[-1]):
+                        mfg = " ".join(words[:-1]).strip()
+                        batch = words[-1].strip()
                     else:
-                        combined = mfg_batch_tokens[0]
-                        words = combined.split()
-                        if len(words) > 1 and any(char.isdigit() for char in words[-1]):
-                            mfg = " ".join(words[:-1]).strip()
-                            batch = words[-1].strip()
+                        match = re.match(r'^([a-zA-Z\s\-\.\*]+?)([0-9].*)$', combined)
+                        if match:
+                            mfg = match.group(1).strip()
+                            batch = match.group(2).strip()
                         else:
-                            match = re.match(r'^([a-zA-Z\s\-\.\*]+?)([0-9].*)$', combined)
-                            if match:
-                                mfg = match.group(1).strip()
-                                batch = match.group(2).strip()
-                            else:
-                                mfg = combined
-                                batch = ""
+                            mfg = combined
+                            batch = ""
+
+            # --- 🛠️ STEP 2: XLS Lookup വെച്ച് വിവരങ്ങൾ ഒന്നുകൂടി കൃത്യമാക്കുന്നു (ഒരു ഫീൽഡും നഷ്ടപ്പെടില്ല) ---
+            xls_last_sup = ""
+            item_key = item_name.upper()
+            
+            if item_key in xls_lookup:
+                xls_last_sup = xls_lookup[item_key]["last_sup"]
+                if xls_lookup[item_key]["mfg"] and xls_lookup[item_key]["mfg"] != "MISC.":
+                    mfg = xls_lookup[item_key]["mfg"]
 
             right_tokens = right_part.split()
             quantity_str = right_tokens[0] if len(right_tokens) > 0 else "0"
@@ -228,7 +219,11 @@ def process_txt_file(uploaded_file, xls_lookup):
             
             invoice = ""
             invoice_date_str = ""
-            rack_id = xls_rack # XLS-ൽ നിന്നുള്ള റാക്ക് ഐഡി ആണ് ആദ്യം എടുക്കുക
+            rack_id = ""
+            
+            # XLS-ൽ റാക്ക് ഐഡി ഉണ്ടെങ്കിൽ അത് ഉപയോഗിക്കുന്നു
+            if item_key in xls_lookup and xls_lookup[item_key]["rack"]:
+                rack_id = xls_lookup[item_key]["rack"]
             
             if len(right_tokens) > 2:
                 invoice_section = " ".join(right_tokens[2:])
@@ -265,8 +260,7 @@ def process_txt_file(uploaded_file, xls_lookup):
             data_rows.append({
                 "Item Name": item_name,
                 "Manufacturer": mfg.upper() if mfg else "MISC.",
-                "Supplier": current_supplier,       # 🛠️ TXT ഫയലിലെ യഥാർത്ഥ ബാച്ച് സപ്ലയർ
-                "Last Supplier": xls_last_sup,      # 🛠️ XLS ഫയലിൽ നിന്നുള്ള ലാസ്റ്റ് സപ്ലയർ
+                "Supplier": current_supplier,       
                 "Rack ID": rack_id if rack_id else "",
                 "Packing": packing,
                 "Batch": batch if batch else "BN",
@@ -274,7 +268,8 @@ def process_txt_file(uploaded_file, xls_lookup):
                 "MRP": mrp,
                 "Quantity": quantity,
                 "Invoice Date": invoice_date,
-                "Invoice Number": invoice if invoice else ""
+                "Invoice Number": invoice if invoice else "",
+                "Last Supplier": xls_last_sup      
             })
         except Exception:
             pass
@@ -298,13 +293,11 @@ if txt_file is not None or inv_file is not None:
     df_list = []
     xls_lookup = {}
     
-    # 🛠️ ആദ്യം XLS ഫയൽ പ്രോസസ്സ് ചെയ്ത് ഡിക്ഷണറി ഉണ്ടാക്കുന്നു
     if inv_file is not None:
         df_inv, xls_lookup = process_inv_file(inv_file)
         if not df_inv.empty:
             df_list.append(df_inv)
             
-    # 🛠️ XLS ഡേറ്റ വെച്ച് TXT ഫയൽ പെർഫെക്റ്റ് ആയി പ്രോസസ്സ് ചെയ്യുന്നു
     if txt_file is not None:
         df_txt = process_txt_file(txt_file, xls_lookup)
         if not df_txt.empty:
@@ -313,10 +306,10 @@ if txt_file is not None or inv_file is not None:
     if df_list:
         final_df = pd.concat(df_list, ignore_index=True)
         
-        # 🛠️ പുതിയ "Last Supplier" കോളം കൂടി ഉൾപ്പെടുത്തിയിരിക്കുന്നു
+        # 🛠️ കറക്റ്റ് ഓർഡർ: പഴയ ഓർഡർ അതുപോലെ നിലനിർത്തി, Last Supplier അവസാനത്തേക്ക് മാറ്റി!
         columns_order = [
-            "Item Name", "Manufacturer", "Supplier", "Last Supplier", "Rack ID", "Packing", 
-            "Batch", "Expiry Date", "MRP", "Quantity", "Invoice Date", "Invoice Number"
+            "Item Name", "Manufacturer", "Supplier", "Rack ID", "Packing", 
+            "Batch", "Expiry Date", "MRP", "Quantity", "Invoice Date", "Invoice Number", "Last Supplier"
         ]
         final_df = final_df[columns_order]
         
@@ -342,9 +335,10 @@ if txt_file is not None or inv_file is not None:
         
         st.success(f"🎉 Files processed successfully! Total {len(final_df)} items combined.")
         
+        # 🕒 പഴയതുപോലെ ഫയൽ നെയിം കറക്റ്റ് ഇന്ത്യൻ സമയം ആക്കി മാറ്റിയിരിക്കുന്നു
         ist = pytz.timezone('Asia/Kolkata')
         current_time = datetime.datetime.now(ist).strftime("%d-%m-%Y %I-%M-%p")
-        dynamic_filename = f"{current_time} - final medical data.xlsx"
+        dynamic_filename = f"{current_time}-offline stocks.xlsx"
         
         st.download_button(
             label="📥 DOWNLOAD MERGED EXCEL FILE",
