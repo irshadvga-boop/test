@@ -19,32 +19,42 @@ def parse_date(d_str):
     try: return pd.to_datetime(d_str, dayfirst=True)
     except: return pd.NaT
 
-# -------------------------------------------------------------
-# 1. ALL INVENTORY / ZERO STOCK FILE PROCESS CHEYYANULLA FUNCTION
-# -------------------------------------------------------------
-def process_inv_file(uploaded_file):
+st.title("📋 Medical Data Converter")
+st.write("Upload your Expiry `.TXT` file and All Inventory `.XLS` file to get a combined perfect Excel sheet.")
+
+col1, col2 = st.columns(2)
+with col1:
+    txt_file = st.file_uploader("1. Upload Expiry .TXT File", type=["txt", "TXT"])
+with col2:
+    inv_file = st.file_uploader("2. Upload All Inventory .XLS/CSV", type=["xls", "xlsx", "csv"])
+
+if txt_file is not None and inv_file is not None:
+    data_rows = []
+    xls_lookup = {}
+    matched_items = set() # TXT-il kithiya items track cheyyan
+    
+    # -------------------------------------------------------------
+    # STEP 1: Process XLS File (Build Lookup Dictionary)
+    # -------------------------------------------------------------
     try:
-        df = pd.read_csv(uploaded_file, on_bad_lines='skip')
+        df_inv = pd.read_csv(inv_file, on_bad_lines='skip')
     except:
-        uploaded_file.seek(0)
-        df = pd.read_excel(uploaded_file)
+        inv_file.seek(0)
+        df_inv = pd.read_excel(inv_file)
 
     header_idx = None
-    for i, row in df.iterrows():
+    for i, row in df_inv.iterrows():
         if row.astype(str).str.contains('iname', case=False, na=False).any():
             header_idx = i
             break
 
     if header_idx is not None:
-        df.columns = df.iloc[header_idx]
-        df = df.iloc[header_idx+1:].reset_index(drop=True)
+        df_inv.columns = df_inv.iloc[header_idx]
+        df_inv = df_inv.iloc[header_idx+1:].reset_index(drop=True)
 
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    df_inv.columns = [str(c).strip().lower() for c in df_inv.columns]
 
-    inv_data = []
-    xls_lookup = {} 
-
-    for _, row in df.iterrows():
+    for _, row in df_inv.iterrows():
         iname = str(row.get('iname', '')).strip()
         if not iname or iname.lower() == 'nan':
             continue
@@ -53,45 +63,23 @@ def process_inv_file(uploaded_file):
         rack = str(row.get('rack', '')).strip()
         sup = str(row.get('bigsup', '')).strip() 
 
-        mfg_clean = imanf.upper() if imanf and imanf.lower() != 'nan' else "MISC."
-        rack_clean = rack if rack and rack.lower() != 'nan' else ""
-        last_sup_clean = sup if sup and sup.lower() != 'nan' else ""
-        
-        xls_lookup[iname.upper()] = {
-            "mfg": mfg_clean,
-            "rack": rack_clean,
-            "last_sup": last_sup_clean
-        }
-
         try: 
             qty_val = float(str(row.get('iqty', '0')).strip())
             qty = int(qty_val) if qty_val.is_integer() else qty_val
         except: 
             qty = 0
 
-        inv_data.append({
-            "Item Name": iname,
-            "Manufacturer": mfg_clean,
-            "Supplier": "", 
-            "Rack ID": rack_clean,
-            "Packing": "",
-            "Batch": "",
-            "Expiry Date": pd.NaT,
-            "MRP": 0.0,
-            "Quantity": qty,  
-            "Invoice Date": pd.NaT,
-            "Invoice Number": "",
-            "Last Supplier": last_sup_clean
-        })
-        
-    return pd.DataFrame(inv_data), xls_lookup
+        xls_lookup[iname.upper()] = {
+            "mfg": imanf.upper() if imanf and imanf.lower() != 'nan' else "MISC.",
+            "rack": rack if rack and rack.lower() != 'nan' else "",
+            "last_sup": sup if sup and sup.lower() != 'nan' else "",
+            "qty": qty,
+            "original_name": iname
+        }
 
-
-# -------------------------------------------------------------
-# 2. EXPIRY TXT FILE PROCESS CHEYYANULLA FUNCTION
-# -------------------------------------------------------------
-def process_txt_file(uploaded_file, xls_lookup):
-    data_rows = []
+    # -------------------------------------------------------------
+    # STEP 2: Process TXT File (Extract Batches, MRP, Dates)
+    # -------------------------------------------------------------
     current_supplier = "UNKNOWN SUPPLIER"  
     start_parsing = False
     
@@ -107,7 +95,7 @@ def process_txt_file(uploaded_file, xls_lookup):
         "SUN", "ZEY", "USV"
     ]
 
-    stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
+    stringio = io.StringIO(txt_file.getvalue().decode("utf-8"))
     raw_lines = stringio.readlines()
     cleaned_lines = [line.rstrip('\r\n') for line in raw_lines if line.strip()]
 
@@ -115,17 +103,14 @@ def process_txt_file(uploaded_file, xls_lookup):
     i = 0
     while i < len(cleaned_lines):
         line = cleaned_lines[i]
-        
         if '\\' not in line and "======" not in line and "----" not in line and "EXPIRED" not in line.upper() and "DATE" not in line.upper():
             if i + 1 < len(cleaned_lines) and '\\' in cleaned_lines[i+1] and "Item Name" not in cleaned_lines[i+1]:
                 line = line.strip() + " " + cleaned_lines[i+1].strip()
                 i += 1  
-                
         if '\\' in line and not list(re.finditer(date_pattern, line)) and "Item Name" not in line:
             if i + 1 < len(cleaned_lines):
                 line = line.strip() + " " + cleaned_lines[i+1].strip()
                 i += 1  
-
         merged_lines.append(line)
         i += 1
 
@@ -151,7 +136,6 @@ def process_txt_file(uploaded_file, xls_lookup):
                 slash_pos = line_raw.find('\\')
                 before_slash = line_raw[:slash_pos].strip()
                 after_slash = line_raw[slash_pos + 1:].strip()
-                
                 if "Item Name" in before_slash or "Manf" in after_slash:
                     continue
             else:
@@ -174,56 +158,13 @@ def process_txt_file(uploaded_file, xls_lookup):
             left_part = after_slash[:expiry_idx].strip()   
             right_part = after_slash[expiry_idx + len(expiry_date_str):].strip() 
             
-            # --- 🛠️ STEP 1: TXT-യിൽ നിന്ന് ആദ്യം ബാച്ചും കമ്പനിയും പെർഫെക്റ്റ് ആയി വേർതിരിക്കുന്നു ---
-            mfg = ""
-            batch = ""
-            
-            for k_mfg in known_mfgs:
-                if left_part.upper().startswith(k_mfg.upper()):
-                    mfg = k_mfg
-                    batch = left_part[len(k_mfg):].strip()
-                    break
-            
-            if not mfg:
-                mfg_batch_tokens = re.split(r'\s{2,}', left_part)
-                if len(mfg_batch_tokens) >= 2:
-                    mfg = mfg_batch_tokens[0].strip()
-                    batch = mfg_batch_tokens[1].strip()
-                else:
-                    combined = mfg_batch_tokens[0]
-                    words = combined.split()
-                    if len(words) > 1 and any(char.isdigit() for char in words[-1]):
-                        mfg = " ".join(words[:-1]).strip()
-                        batch = words[-1].strip()
-                    else:
-                        match = re.match(r'^([a-zA-Z\s\-\.\*]+?)([0-9].*)$', combined)
-                        if match:
-                            mfg = match.group(1).strip()
-                            batch = match.group(2).strip()
-                        else:
-                            mfg = combined
-                            batch = ""
-
-            # --- 🛠️ STEP 2: XLS Lookup വെച്ച് വിവരങ്ങൾ ഒന്നുകൂടി കൃത്യമാക്കുന്നു (ഒരു ഫീൽഡും നഷ്ടപ്പെടില്ല) ---
-            xls_last_sup = ""
-            item_key = item_name.upper()
-            
-            if item_key in xls_lookup:
-                xls_last_sup = xls_lookup[item_key]["last_sup"]
-                if xls_lookup[item_key]["mfg"] and xls_lookup[item_key]["mfg"] != "MISC.":
-                    mfg = xls_lookup[item_key]["mfg"]
-
+            # Extract basic data
             right_tokens = right_part.split()
             quantity_str = right_tokens[0] if len(right_tokens) > 0 else "0"
             mrp_str = right_tokens[1] if len(right_tokens) > 1 else "0.0"
             
             invoice = ""
             invoice_date_str = ""
-            rack_id = ""
-            
-            # XLS-ൽ റാക്ക് ഐഡി ഉണ്ടെങ്കിൽ അത് ഉപയോഗിക്കുന്നു
-            if item_key in xls_lookup and xls_lookup[item_key]["rack"]:
-                rack_id = xls_lookup[item_key]["rack"]
             
             if len(right_tokens) > 2:
                 invoice_section = " ".join(right_tokens[2:])
@@ -232,90 +173,122 @@ def process_txt_file(uploaded_file, xls_lookup):
                     invoice_date_str = inv_date_matches[0].group(0)
                     idx = invoice_section.find(invoice_date_str)
                     invoice_part = invoice_section[:idx].strip()
-                    rack_part = invoice_section[idx + len(invoice_date_str):].strip()
                     invoice = invoice_part.strip('- ').strip()
-                    if not rack_id: 
-                        rack_id = rack_part.strip('- ').strip()
                 else:
                     inv_parts = [p.strip() for p in invoice_section.split('-') if p.strip()]
                     if len(inv_parts) >= 2:
                         invoice = inv_parts[0]
-                        if not rack_id: rack_id = inv_parts[1]
                         if invoice == '*': invoice = ""
                     elif len(inv_parts) == 1:
                         val = inv_parts[0]
-                        if any(char.isdigit() for char in val) and len(val) <= 3: 
-                            if not rack_id: rack_id = val
-                        else: 
+                        if not (any(char.isdigit() for char in val) and len(val) <= 3): 
                             invoice = val if val != '*' else ""
+
+            # 🛠️ MERGE LOGIC (XLS data overrides TXT logic)
+            item_key = item_name.upper()
+            mfg = ""
+            batch = left_part.strip()
+            xls_rack = ""
+            xls_last_sup = ""
             
+            if item_key in xls_lookup:
+                matched_items.add(item_key) # Item mark cheyyunnu
+                mfg = xls_lookup[item_key]["mfg"]
+                xls_rack = xls_lookup[item_key]["rack"]
+                xls_last_sup = xls_lookup[item_key]["last_sup"]
+                
+                # Strip manufacturer name to extract perfect batch
+                if mfg and mfg != "MISC.":
+                    pattern = re.compile('^' + re.escape(mfg) + r'\s*', re.IGNORECASE)
+                    if pattern.search(batch):
+                        batch = pattern.sub('', batch).strip()
+            else:
+                # Fallback if item is completely missing in XLS
+                for k_mfg in known_mfgs:
+                    if left_part.upper().startswith(k_mfg.upper()):
+                        mfg = k_mfg
+                        batch = left_part[len(k_mfg):].strip()
+                        break
+                if not mfg:
+                    mfg_batch_tokens = re.split(r'\s{2,}', left_part)
+                    if len(mfg_batch_tokens) >= 2:
+                        mfg = mfg_batch_tokens[0].strip()
+                        batch = mfg_batch_tokens[1].strip()
+                    else:
+                        combined = mfg_batch_tokens[0]
+                        words = combined.split()
+                        if len(words) > 1 and any(char.isdigit() for char in words[-1]):
+                            mfg = " ".join(words[:-1]).strip()
+                            batch = words[-1].strip()
+                        else:
+                            mfg = combined
+                            batch = ""
+
             expiry_date = parse_date(expiry_date_str)
             invoice_date = parse_date(invoice_date_str) if invoice_date_str else pd.NaT
                 
             try: quantity = int(quantity_str)
             except: quantity = 0
+            
             try: mrp = float(mrp_str)
             except: mrp = 0.0
                 
             data_rows.append({
                 "Item Name": item_name,
-                "Manufacturer": mfg.upper() if mfg else "MISC.",
-                "Supplier": current_supplier,       
-                "Rack ID": rack_id if rack_id else "",
+                "Manufacturer": mfg if mfg else "MISC.",
+                "Last Supplier": xls_last_sup,
+                "Rack ID": xls_rack,
                 "Packing": packing,
                 "Batch": batch if batch else "BN",
                 "Expiry Date": expiry_date,
-                "MRP": mrp,
+                "MRP": f"₹ {mrp:g}", # ₹ icon
                 "Quantity": quantity,
+                "Supplier": current_supplier,
                 "Invoice Date": invoice_date,
-                "Invoice Number": invoice if invoice else "",
-                "Last Supplier": xls_last_sup      
+                "Invoice Number": invoice if invoice else ""
             })
         except Exception:
             pass
-            
-    return pd.DataFrame(data_rows)
 
+    # -------------------------------------------------------------
+    # STEP 3: Append Zero Stock / Unmatched items from XLS
+    # -------------------------------------------------------------
+    for key, data in xls_lookup.items():
+        if key not in matched_items:
+            data_rows.append({
+                "Item Name": data["original_name"],
+                "Manufacturer": data["mfg"],
+                "Last Supplier": data["last_sup"],
+                "Rack ID": data["rack"],
+                "Packing": "",
+                "Batch": "",
+                "Expiry Date": pd.NaT,
+                "MRP": "₹ 0", 
+                "Quantity": data["qty"],
+                "Supplier": "",
+                "Invoice Date": pd.NaT,
+                "Invoice Number": ""
+            })
 
-# -------------------------------------------------------------
-# 3. STREAMLIT UI & MERGING LOGIC
-# -------------------------------------------------------------
-st.title("📋 Medical Data Converter")
-st.write("Upload your Expiry `.TXT` file and All Inventory `.XLS` file to get a combined perfect Excel sheet.")
-
-col1, col2 = st.columns(2)
-with col1:
-    txt_file = st.file_uploader("1. Upload Expiry .TXT File", type=["txt", "TXT"])
-with col2:
-    inv_file = st.file_uploader("2. Upload All Inventory .XLS/CSV", type=["xls", "xlsx", "csv"])
-
-if txt_file is not None or inv_file is not None:
-    df_list = []
-    xls_lookup = {}
-    
-    if inv_file is not None:
-        df_inv, xls_lookup = process_inv_file(inv_file)
-        if not df_inv.empty:
-            df_list.append(df_inv)
-            
-    if txt_file is not None:
-        df_txt = process_txt_file(txt_file, xls_lookup)
-        if not df_txt.empty:
-            df_list.append(df_txt)
-
-    if df_list:
-        final_df = pd.concat(df_list, ignore_index=True)
+    # -------------------------------------------------------------
+    # STEP 4: Generate Excel with Alphabetical Sorting & Date Formats
+    # -------------------------------------------------------------
+    if data_rows:
+        df = pd.DataFrame(data_rows)
         
-        # 🛠️ കറക്റ്റ് ഓർഡർ: പഴയ ഓർഡർ അതുപോലെ നിലനിർത്തി, Last Supplier അവസാനത്തേക്ക് മാറ്റി!
+        # Exact Column Order Required
         columns_order = [
-            "Item Name", "Manufacturer", "Supplier", "Rack ID", "Packing", 
-            "Batch", "Expiry Date", "MRP", "Quantity", "Invoice Date", "Invoice Number", "Last Supplier"
+            "Item Name", "Manufacturer", "Last Supplier", "Rack ID", "Packing", 
+            "Batch", "Expiry Date", "MRP", "Quantity", "Supplier", "Invoice Date", "Invoice Number"
         ]
-        final_df = final_df[columns_order]
+        df = df[columns_order]
+        
+        # Alphabetical sort by Item Name, then Batch
+        df = df.sort_values(by=["Item Name", "Batch"], ascending=[True, True])
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            final_df.to_excel(writer, index=False, sheet_name="Merged Data")
+            df.to_excel(writer, index=False, sheet_name="Merged Data")
             worksheet = writer.sheets["Merged Data"]
             
             for col in worksheet.columns:
@@ -323,8 +296,9 @@ if txt_file is not None or inv_file is not None:
                 col_letter = col[0].column_letter
                 for cell in col:
                     if cell.value is not None:
+                        # Ensure date format inside Excel
                         if isinstance(cell.value, (pd.Timestamp, datetime.datetime, datetime.date)):
-                            cell.number_format = 'yyyy-mm-dd'
+                            cell.number_format = 'dd-mm-yyyy'
                             cell_len = 10
                         else:
                             cell_len = len(str(cell.value))
@@ -333,9 +307,9 @@ if txt_file is not None or inv_file is not None:
                 
         processed_data = output.getvalue()
         
-        st.success(f"🎉 Files processed successfully! Total {len(final_df)} items combined.")
+        st.success(f"🎉 Files processed successfully! Total {len(df)} items combined.")
         
-        # 🕒 പഴയതുപോലെ ഫയൽ നെയിം കറക്റ്റ് ഇന്ത്യൻ സമയം ആക്കി മാറ്റിയിരിക്കുന്നു
+        # Dynamic File Name based on Indian Time
         ist = pytz.timezone('Asia/Kolkata')
         current_time = datetime.datetime.now(ist).strftime("%d-%m-%Y %I-%M-%p")
         dynamic_filename = f"{current_time}-offline stocks.xlsx"
@@ -348,3 +322,6 @@ if txt_file is not None or inv_file is not None:
         )
     else:
         st.error("Could not parse any valid rows. Please check the file formats.")
+
+elif txt_file is None and inv_file is None:
+    st.info("Please upload BOTH the Expiry TXT file and the Inventory XLS/CSV file to proceed.")
